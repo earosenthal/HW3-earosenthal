@@ -1,0 +1,119 @@
+Biostat 578A HW3 Elisabeth Rosenthal
+========================================================
+
+```{r}
+# get libraries
+library(knitr)
+source("http://bioconductor.org/biocLite.R")
+library(data.table)
+biocLite("limma")
+library(limma)
+biocLite("GEOquery")
+library(GEOquery)
+
+# get data assuming that already have files since we did this in class and T14 file is already fixed
+# organize the data
+gd <- getGEO("GSE45735", destdir = ".")
+pd <- pData(gd[[1]])
+files <- list.files(path = ".", pattern = "GSE45735_T.*.gz", full.names = TRUE)
+file_list <- lapply(files, read.table, header=TRUE)
+# Remove duplicated rows
+file_list_unique <- lapply(file_list, function(x){x<-x[!duplicated(x$Gene),]; 
+                                                  x <- x[order(x$Gene),]; 
+                                                  rownames(x) <- x$Gene;
+                                                  x[,-1]})
+# Take the intersection of all genes
+gene_list <- Reduce(intersect, lapply(file_list_unique, rownames))
+file_list_unique <- lapply(file_list_unique, "[", gene_list,)
+matrix <- as.matrix(do.call(cbind, file_list_unique))
+
+# Clean up the pData
+pd_small <- pd[!grepl("T13_Day8",pd$title),]
+pd_small$Day <- sapply(strsplit(gsub(" \\[PBMC\\]", "", pd_small$title),"_"),"[",2)
+pd_small$subject <- sapply(strsplit(gsub(" \\[PBMC\\]", "", pd_small$title),"_"),"[",1)
+colnames(matrix) <- rownames(pd_small)
+
+# create the Eset
+new_set <- ExpressionSet(assayData = matrix+1)
+pData(new_set) <- pd_small
+
+# get voom results for all days (1-10)
+design <- model.matrix(~subject+Day, new_set)
+new_set_voom <- voom(new_set,design = design)
+lm <- lmFit(new_set_voom, design)
+eb <- eBayes(lm)
+ 
+
+# get adjusted p-values and log2 fold changes for all the genes. 
+# sorty.by = "none" so that order of genes is always the same
+check.table <- topTable(eb, coef="DayDay1",sort.by="none",number=length(rownames(eb)))
+gene.names <- rownames(check.table)
+fold.change <- check.table$logFC
+p.value <- check.table$adj.P.Val
+res <- vector("list",length = 10)
+for(i in 2:10)
+  {
+  contrast <- paste0("DayDay",i)
+  check.table <- topTable(eb, coef=contrast, sort.by="none",number=length(rownames(eb)))
+  fold.change <- cbind(fold.change, check.table$logFC)
+  p.value <- cbind(p.value, check.table$adj.P.Val)
+  }
+rownames(fold.change) <- rownames(check.table)
+rownames(p.value) <- rownames(check.table)
+
+# get genes that have adjusted p-value < 0.01 (FDR) for each time point
+pass.fdr <- function(x){
+  ifelse(x < 0.01,1,0)
+}
+genes.that.pass <- apply(p.value,2, pass.fdr)
+rownames(p.value)[genes.that.pass[,1]==1]
+rownames(p.value)[genes.that.pass[,2]==1]
+rownames(p.value)[genes.that.pass[,3]==1]
+rownames(p.value)[genes.that.pass[,4]==1]
+rownames(p.value)[genes.that.pass[,5]==1]
+rownames(p.value)[genes.that.pass[,6]==1]
+rownames(p.value)[genes.that.pass[,7]==1]
+rownames(p.value)[genes.that.pass[,8]==1]
+rownames(p.value)[genes.that.pass[,9]==1]
+rownames(p.value)[genes.that.pass[,10]==1]
+
+# 58 genes pass at day 1
+# 1 gene passes at day 3
+genelist <- union(rownames(p.value)[genes.that.pass[,1]==1], rownames(p.value)[genes.that.pass[,3]==1])
+
+# plot results for these 59 genes with heatmap
+library(pheatmap)
+pheatmap(fold.change[genelist,], cluster_cols=FALSE)
+
+# Use CAMERA on Reactome pathway genes
+library(BiocInstaller)
+biocLite("GSEABase")
+library(GSEABase)
+
+#You need to download the Reactome gene symbols from http://www.broadinstitute.org/gsea/msigdb/collections.jsp#C2. 
+# The file name is c2.cp.reactome.v4.0.symbols.gmt
+c2_set <- getGmt("c2.cp.reactome.v4.0.symbols.gmt")
+gene_ids <- geneIds(c2_set)
+
+# Camera requires gene-indices
+sets_indices <- symbols2indices(gene_ids, rownames(new_set))
+
+# get the contrasts for each Day
+res <- vector("list",length = 10)
+for(i in 1:10)
+  {
+  contrast <- paste0("DayDay",i)
+  cont_matrix <- makeContrasts(contrast, levels=design)
+  res[[i]] <- camera(new_set_voom, sets_indices, design=design, contrast=cont_matrix, sort=FALSE)
+}
+
+
+PValue <- sapply(res, function(x){ifelse(x$Direction=="Up", -10*log10(x$PValue), 10*log10(x$PValue))})
+rownames(PValue) <- rownames(res[[1]])
+PValue_max <- rowMax(abs(PValue))
+PValue_small <- PValue[PValue_max>30, ]
+anno <- data.frame(Time=paste0("Day",1:10))
+rownames(anno) <- colnames(PValue_small)  <- paste0("Day",1:10)
+pheatmap(PValue_small, cluster_cols=FALSE, cluster_rows=FALSE)
+
+```
